@@ -36,7 +36,8 @@ final class TranscribeTask {
     func run(
         audioArray: [Float],
         decodeOptions: DecodingOptions? = nil,
-        callback: TranscriptionCallback = nil
+        callback: TranscriptionCallback = nil,
+        segmentsCallback: SegmentsCallback
     ) async throws -> TranscriptionResult {
         let interval = Logging.beginSignpost("TranscribeAudio", signposter: Logging.TranscribeTask.signposter)
         defer { Logging.endSignpost("TranscribeAudio", interval: interval, signposter: Logging.TranscribeTask.signposter) }
@@ -229,6 +230,8 @@ final class TranscribeTask {
                         Logging.debug(line)
                     }
                 }
+
+                segmentsCallback?(currentSegments)
 
                 // add them to the `allSegments` list
                 allSegments.append(contentsOf: currentSegments)

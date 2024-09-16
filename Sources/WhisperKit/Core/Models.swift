@@ -650,6 +650,8 @@ public struct TranscriptionProgress {
 /// - Note: This callback should be lightweight and return as quickly as possible to avoid extra decoding loops
 public typealias TranscriptionCallback = ((TranscriptionProgress) -> Bool?)?
 
+public typealias SegmentsCallback = (([TranscriptionSegment]) -> Void)?
+
 public struct TranscriptionTimings: Codable {
     public var pipelineStart: CFAbsoluteTime
     public var firstTokenTime: CFAbsoluteTime
