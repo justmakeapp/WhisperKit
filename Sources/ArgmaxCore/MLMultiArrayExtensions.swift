@@ -7,14 +7,18 @@ import CoreML
 
 public extension MLMultiArray {
     /// Creates an MLMultiArray pre-filled with an initial value.
-    /// Uses IOSurface-backed storage for float16 arrays.
+    /// Uses IOSurface-backed storage for float16 arrays except on x86_64.
     convenience init(shape: [NSNumber], dataType: MLMultiArrayDataType, initialValue: Any) throws {
         switch dataType {
             case .float16:
+                #if arch(x86_64)
+                try self.init(shape: shape, dataType: dataType)
+                #else
                 guard let pixelBuffer = Self.pixelBuffer(for: shape) else {
                     throw MLMultiArrayCreationError.pixelBufferFailed
                 }
                 self.init(pixelBuffer: pixelBuffer, shape: shape)
+                #endif
             default:
                 try self.init(shape: shape, dataType: dataType)
         }
@@ -22,35 +26,89 @@ public extension MLMultiArray {
         switch dataType {
             case .double:
                 if let value = initialValue as? Double {
-                    let typedPointer = dataPointer.bindMemory(to: Double.self, capacity: count)
-                    typedPointer.initialize(repeating: value, count: count)
+                    fillBuffer(with: value)
                 }
             case .float32:
                 if let value = initialValue as? Float {
-                    let typedPointer = dataPointer.bindMemory(to: Float.self, capacity: count)
-                    typedPointer.initialize(repeating: value, count: count)
+                    fillBuffer(with: value)
                 }
             case .float16:
                 if let value = initialValue as? FloatType {
-                    let typedPointer = dataPointer.bindMemory(to: FloatType.self, capacity: count)
-                    typedPointer.initialize(repeating: value, count: count)
+                    fillFloat16Buffer(with: Self.float16BitPattern(for: Float(value)))
                 }
             case .int32:
                 if let value = initialValue as? Int32 {
-                    let typedPointer = dataPointer.bindMemory(to: Int32.self, capacity: count)
-                    typedPointer.initialize(repeating: value, count: count)
+                    fillBuffer(with: value)
                 }
             #if compiler(>=6.2)
             case .int8:
                 if #available(macOS 26.0, iOS 26.0, watchOS 26.0, visionOS 26.0, tvOS 26.0, *),
                    let value = initialValue as? Int8 {
-                    let typedPointer = dataPointer.bindMemory(to: Int8.self, capacity: count)
-                    typedPointer.initialize(repeating: value, count: count)
+                    fillBuffer(with: value)
                 }
             #endif
             @unknown default:
                 break
         }
+    }
+
+    private func fillBuffer<Scalar: MLShapedArrayScalar>(with value: Scalar) {
+        withUnsafeMutableBufferPointer(ofType: Scalar.self) { buffer, _ in
+            for index in buffer.indices {
+                buffer[index] = value
+            }
+        }
+    }
+
+    private func fillFloat16Buffer(with bitPattern: UInt16) {
+        var bitPattern = bitPattern
+        withUnsafeMutableBytes { buffer, _ in
+            Swift.withUnsafeBytes(of: &bitPattern) { valueBytes in
+                for offset in stride(from: 0, to: buffer.count - 1, by: MemoryLayout<UInt16>.stride) {
+                    buffer[offset] = valueBytes[0]
+                    buffer[offset + 1] = valueBytes[1]
+                }
+            }
+        }
+    }
+
+    private static func float16BitPattern(for value: Float) -> UInt16 {
+        let bitPattern = value.bitPattern
+        let sign = UInt16(truncatingIfNeeded: bitPattern >> 16) & 0x8000
+        let exponent = Int((bitPattern >> 23) & 0xff)
+        let significand = bitPattern & 0x7fffff
+
+        if exponent == 0xff {
+            guard significand != 0 else { return sign | 0x7c00 }
+            let payload = UInt16(truncatingIfNeeded: significand >> 13)
+            return sign | 0x7c00 | payload | 0x0200
+        }
+
+        let float16Exponent = exponent - 127 + 15
+        if float16Exponent >= 0x1f {
+            return sign | 0x7c00
+        }
+
+        if float16Exponent <= 0 {
+            guard float16Exponent >= -10 else { return sign }
+            let significandWithHiddenBit = significand | 0x800000
+            let shift = UInt32(14 - float16Exponent)
+            let rounded = roundToNearestEven(significandWithHiddenBit, shift: shift)
+            return sign | UInt16(truncatingIfNeeded: rounded)
+        }
+
+        let roundedSignificand = roundToNearestEven(significand, shift: 13)
+        let magnitude = (UInt32(float16Exponent) << 10) + roundedSignificand
+        return sign | UInt16(truncatingIfNeeded: magnitude)
+    }
+
+    private static func roundToNearestEven(_ value: UInt32, shift: UInt32) -> UInt32 {
+        let truncated = value >> shift
+        let remainderMask = (UInt32(1) << shift) - 1
+        let remainder = value & remainderMask
+        let halfway = UInt32(1) << (shift - 1)
+        let shouldRoundUp = remainder > halfway || (remainder == halfway && truncated & 1 == 1)
+        return truncated + (shouldRoundUp ? 1 : 0)
     }
 
     /// Creates an MLMultiArray from an [Int] array.
@@ -155,4 +213,3 @@ public enum MLMultiArrayCreationError: Error, LocalizedError {
         }
     }
 }
-
